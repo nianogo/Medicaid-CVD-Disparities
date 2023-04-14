@@ -1,0 +1,1092 @@
+---
+title: "Medicaid-CVD manuscript"
+author: "Anonymized for review"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: kable
+    mathjax: default
+    number_sections: yes
+    theme: lumen
+    highlight: tango
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE
+)
+
+if (!require("pacman")){
+  install.packages("pacman", repos = 'http://cran.us.r-project.org')
+} # a nice package to load several packages simultaneously
+
+p_load("tidyverse","magrittr","broom",        #manipulate data
+          "mise",                                #directory management
+          "here",                                #directory   
+          'readxl', #read_excel
+          'labelled',
+          'tidycensus',#FIPS code for states and counties
+          "gtsummary",
+          'haven',#read_sas()
+          "glue",
+          'readxl',
+          'progress',
+          'beepr',
+          "gsynth",    #for implementing the g-synthetic control: gsynth()
+          "panelView", #for displaying the data: panelView()
+          "lme4",      #For multilevel analysis: lmer()
+          "estimatr",  #for robust standard error: lm_robust()
+          "metafor",    #for meta-analysis
+          'extrafont',  #windows font
+          "usdata",      #convert fips to state name: convert_fips_to_names()
+          "formattable", #modify decimal places of numeric values: digits()
+          "flextable",   #for nice tables
+          "codebook",    #amazing package to set labels: dict_to_list()
+          "datapasta",   #Copying tables from Excel, Jupyter, and websites: tribble_paste(), vector_paste()
+          "fastDummies", #create dummy variables: dummy_cols(),
+          "cdlTools",    #convert state name to fips code: fips()
+          "survey",      #to analyze complex survey design data: svydesign()
+          "srvyr",       #to analyze complex survey design data with dplyr: as_survey_design()
+          "priceR",       #to adjust for inflation adjust_for_inflation()) # package names
+          'panelView',
+          'estimatr',  #for the lm_robust() function
+          'readr', #read in txt file, read_tsv()
+          'gt',#gtsave()
+          'ggpubr',#ggarrange()
+          'forestmangr',#round_df()
+          'gridExtra',
+          'grid',
+          'lattice')
+```
+
+
+
+# Loading the data  
+
+ 1. Socio-demographic dta came from BRFSS 2000-2019.
+ 2. State-level CVD mortality rates were obtained from CDC WONDER. 
+ 3. Data of primary care clinicians and cardiologists per 100,000 residents was\ 
+ calculated from the Health Resources and Services Administration Area Health Resource.
+ 4. States' political orientation. 
+
+## BRFSS data
+```{r, results='hide'}
+bfrss_overall <- read_rds(here('data', 'raw_data', 'bfrss_overall.RData')) %>% 
+  mutate(state_id=as.numeric(state_id),
+         year=as.numeric(year))
+
+bfrss_race <- read_rds(here('data', 'raw_data', 'bfrss_race.RData')) %>% 
+  mutate(state_id=as.numeric(state_id),
+         year=as.numeric(year))
+
+bfrss_gender <- read_rds(here('data', 'raw_data', 'bfrss_gender.RData'))%>% 
+  mutate(state_id=as.numeric(state_id),
+         year=as.numeric(year)) 
+
+```
+
+## CDC WONDER data
+```{r, results='hide'}
+cvd_overall <- read_tsv(here('data', 'raw_data', "state.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate') %>% 
+  mutate(state_id=as.numeric(state_id)) %>% 
+  dplyr::filter(state_id !=11)#DC
+
+cvd_black <- read_tsv(here('data', 'raw_data', "black.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate')%>% 
+  mutate(state_id=as.numeric(state_id),
+         death=as.numeric(death))%>% 
+  dplyr::filter(state_id !=11)#DC
+
+cvd_white <- read_tsv(here('data', 'raw_data', "white.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate')%>% 
+  mutate(state_id=as.numeric(state_id),
+         death=as.numeric(death))%>% 
+  dplyr::filter(state_id !=11)#DC
+
+cvd_hispanic <- read_tsv(here('data', 'raw_data', "hispanic.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate')%>% 
+  mutate(state_id=as.numeric(state_id),
+         death=as.numeric(death))%>% 
+  dplyr::filter(state_id !=11)#DC
+
+cvd_men <- read_tsv(here('data', 'raw_data', "men.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate')%>% 
+  mutate(state_id=as.numeric(state_id),
+         death=as.numeric(death))%>% 
+  dplyr::filter(state_id !=11)#DC
+
+cvd_women <- read_tsv(here('data', 'raw_data', "women.txt")) %>% 
+  select(c(State, "State Code",  "Year", "Age Adjusted Rate")) %>% 
+  rename(state_id='State Code',
+         year=Year,
+         death='Age Adjusted Rate')%>% 
+  mutate(state_id=as.numeric(state_id),
+         death=as.numeric(death))%>% 
+  dplyr::filter(state_id !=11)#DC
+```
+
+## Clinician data
+```{r, results='hide'}
+clinician <- read_csv(here('data', 'raw_data', 'clinician.csv')) 
+```
+
+## States' political orientation
+```{r, results='hide'}
+politics <- read_excel(here('data', 'raw_data', 'political party.xlsx')) 
+#0 republican, 1 democratic, 2 split
+```
+
+# Cleaning and merging the data  
+## Overall
+```{r, results='hide'}
+overall <- list(cvd_overall, clinician, bfrss_overall) %>% 
+  reduce(left_join, by = c('state_id', 'year'))%>% 
+  filter(year>1999) %>% 
+  left_join(politics, by=c('State', 'year')) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post)
+write_rds(overall, here("data", "output_data", "overall.rds"))
+```
+
+## Black
+```{r, results='hide'}
+black <- bfrss_race %>% 
+  dplyr::filter(race=='Black') %>% 
+  list(., clinician, cvd_black) %>% 
+  reduce(right_join, by = c('state_id', 'year'))%>% 
+  left_join(politics, by=c('State', 'year')) %>% 
+  filter(year>1999) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post) 
+write_rds(black, here("data", "output_data", "black.rds"))
+```
+
+## Hispanic
+```{r, results='hide'}
+hispanic <- bfrss_race %>% 
+  dplyr::filter(race=='Hispanic') %>% 
+  list(., clinician, cvd_hispanic) %>% 
+  reduce(right_join, by = c('state_id', 'year'))%>% 
+  left_join(politics, by=c('State', 'year')) %>% 
+  filter(year>1999) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post) 
+
+write_rds(hispanic, here("data", "output_data", "hispanic.rds"))
+
+#Impute for Missouri, North Carolina, Utah, Wisconsin, Kansas, Maryland, Oregon, Illinois
+hispanic_fill <- data.frame(State = c('Missouri','North Carolina', 'Utah','Wisconsin', 'Kansas', 'Maryland', 'Oregon',
+                                      'Illinois'),
+                            year=rep(2000:2019, each = 8)) %>% 
+  merge(hispanic, by=c('State', 'year'), all.x=TRUE) %>% 
+  fill(everything(), .direction='downup') 
+
+hispanic_filled <- hispanic %>% filter(!State %in% c('Missouri','North Carolina', 'Utah','Wisconsin', 'Kansas', 
+                                                    'Maryland', 'Oregon', 'Illinois')) %>% 
+  bind_rows(hispanic_fill)
+write_rds(hispanic_filled, here("data", "output_data", "hispanic_filled.rds"))
+```
+
+## White
+```{r, results='hide'}
+white <- bfrss_race %>% 
+  dplyr::filter(race=='White') %>% 
+  list(., clinician, cvd_white) %>% 
+  reduce(right_join, by = c('state_id', 'year'))%>% 
+  left_join(politics, by=c('State', 'year')) %>% 
+  filter(year>1999) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post) 
+
+write_rds(white, here("data", "output_data", "white.rds"))
+```
+
+## Men
+```{r, results='hide'}
+men <- bfrss_gender %>% 
+  dplyr::filter(male==1) %>% 
+  list(., clinician, cvd_men) %>% 
+  reduce(right_join, by = c('state_id', 'year'))%>% 
+  filter(year>1999) %>% 
+  left_join(politics, by=c('State', 'year')) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post) 
+
+write_rds(men, here("data", "output_data", "men.rds"))
+```
+
+## Women
+```{r, results='hide'}
+women <- bfrss_gender %>% 
+  dplyr::filter(male==0) %>% 
+  list(., clinician, cvd_women) %>% 
+  reduce(right_join, by = c('state_id', 'year'))%>% 
+  filter(year>1999) %>%
+  left_join(politics, by=c('State', 'year')) %>% 
+  mutate(#create exposure status
+    post = case_when(State == "Alaska" & year < 2015 ~ 0,
+                     State == "Idaho" & year < 2020 ~ 0,
+                     State == "Indiana" & year<2015 ~ 0,
+                     State == "Louisiana" & year<2016 ~ 0,
+                     State == "Maine" & year<2019 ~ 0,
+                     State == "Missouri" & year < 2020 ~ 0,
+                     State == "Montana" & year<2016 ~ 0,
+                     State == "Nebraska" & year<2020 ~ 0,
+                     State == "Pennsylvania" & year<2015 ~ 0,
+                     State == "Utah" & year < 2020 ~ 0,
+                     State == "Virginia" & year < 2019 ~ 0,
+                     !(State %in% c('Alaska', 'Idaho', "Indiana", 'Lousiana', "Maine", 'Missouri', "Montana", 
+                                    "Nebraska", "Pennsylvania", "Utah", "Virginia")) & year<2014 ~ 0,
+                     TRUE ~ 1), 
+    treated = ifelse(State %in% c('Alabama', "Florida", "Georgia", "Mississippi", 
+                                  "North Carolina", 'Oklahoma', "South Carolina", "South Dakota", 
+                                  "Tennessee", "Texas", "Wisconsin", "Wyoming"), 0, 1),
+    treatedpost = treated*post) 
+
+write_rds(women, here("data", "output_data", "women.rds"))
+```
+# Analyzing the data using the generalzied SCM
+## Overall
+
+```{r, fig.show='hide', results = 'hide'}
+
+overall <- read_rds(here("data", "output_data", "overall.rds"))
+
+est_overall <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + 
+                        population + 
+              low_educ + employed_for_wages + party +  
+              low_income + married + male + race_White,
+            data = overall %>% filter(!state_id %in% c(2, 51)) %>% 
+              filter(!(state_id==34 & year==2019)),  
+            EM = F, 
+            index = c("state_id","year"),
+            inference = "parametric", se = TRUE, 
+            #min.T0 = 5, 
+            r = c(0, 5), 
+            nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+#ATT plot
+p1 <- plot(est_overall, type = "counterfactual", raw = "none", 
+           theme.bw = TRUE, main = "", #ylim = c(120, 200), 
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p1, here("figures", 'overall att.png'))
+
+overall_by_period <- est_overall[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+#write_csv(overall_by_period, here('tables', 'overall_by_period.csv'), row.names = FALSE) 
+
+
+overall_average <- data.frame(est_overall$est.avg)
+#write_csv(overall_average, here('tables', 'overall_average.csv'), row.names = FALSE) 
+```
+
+## Black
+```{r, fig.show='hide', results = 'hide'}
+black <- read_rds(here("data", "output_data", "black.rds"))
+
+est_black <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + population + 
+                      low_educ + employed_for_wages + party +  
+                      low_income + married + male,
+                      data = black %>% filter(!(State %in% c('Alaska', 'Hawaii','New Mexico', 
+                                                            'Rhode Island', 'South Dakota', 'Utah', 'Virginia'))) %>% 
+                                               filter(!(state_id==34 & year==2019)),  
+                      EM = F, 
+                      index = c("state_id","year"),
+                      inference = "parametric", se = TRUE, 
+                      #min.T0 = 5, 
+                      r = c(0, 5), 
+                      nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p2 <- plot(est_black, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p2, here("figures", 'black att.png'))
+
+black_by_period <- est_black[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+#write_csv(black_by_period, here('tables', 'black_by_period.csv'), row.names = FALSE) 
+
+black_average <- data.frame(est_black$est.avg)
+
+#write_csv(black_average, here('tables', 'black_average.csv'), row.names = FALSE) 
+
+```
+## Hispanic
+```{r, fig.show='hide', results = 'hide'}
+
+hispanic <- read_rds(here("data", "output_data", "hispanic.rds"))
+#gsynth doesn not work for Hispanic given the high missingness (so used the imputed data)
+
+hispanic_filled <- read_rds(here("data", "output_data", "hispanic_filled.rds"))
+
+est_hispanic <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + population +
+                       low_educ + employed_for_wages + party +
+                       low_income + married + male,
+                     data = hispanic_filled%>% filter(!State %in% c(
+                       'Alabama', 'Arkansas', 'Idaho', 'Iowa', 'Kentucky',
+                       'Louisiana', 'Minnesota', 'Nebraska', 'Rhode Island',
+                       'South Carolina', 'Tennessee', 'Alaska', 'Delaware', 'Mississippi',
+                       'New Hampshire', 'Virginia', 'Wyoming'
+                       
+                     )) %>% 
+                       #%>% 
+                       filter(!(state_id==34 & year==2019)),
+                     EM = F,
+                     index = c("state_id","year"),
+                     inference = "parametric", se = TRUE,
+                     #min.T0 = 5,
+                     r = c(0, 5),
+                     nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p3 <- plot(est_hispanic, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),
+           legendOff = TRUE, xlab = "", ylab = "") +
+   theme(panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank(),
+         #axis.text.x = element_text(angle = 90, vjust = 0.5),
+         plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p3, here("figures", 'hispanic att.png'))
+
+hispanic_by_period <- est_hispanic[["est.att"]] %>%
+   as.data.frame() %>%
+   rownames_to_column(var= "time") %>%
+   mutate(time=as.numeric(time)) %>%
+   dplyr::filter(time>=0)
+
+#write_csv(hispanic_by_period, here('tables', 'hispanic_by_period.csv'), row.names = FALSE)
+
+hispanic_average <- data.frame(est_hispanic$est.avg)
+
+#write_csv(hispanic_average, here('tables', 'hispanic_average.csv'), row.names = FALSE)
+
+```
+## White
+```{r, fig.show='hide', results = 'hide'}
+
+white <- read_rds(here("data", "output_data", "white.rds"))
+
+est_white <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + population + 
+                      low_educ + employed_for_wages + party +  
+                      low_income + married + male,
+                    data = white %>% filter(!state_id %in% c(2, 51))%>% 
+                      filter(!(state_id==34 & year==2019)),  
+                    EM = F, 
+                    index = c("state_id","year"),
+                    inference = "parametric", se = TRUE, 
+                    #min.T0 = 5, 
+                    r = c(0, 5), 
+                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p4 <- plot(est_white, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p4, here("figures", 'white att.png'))
+
+
+white_by_period <- est_white[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+#write_csv(white_by_period, here('tables', 'white_by_period.csv'), row.names = FALSE) 
+
+white_average <- data.frame(est_white$est.avg)
+
+#write_csv(white_average, here('tables', 'white_average.csv'), row.names = FALSE) 
+```
+
+## Men
+```{r, fig.show='hide', results = 'hide'}
+
+men <- read_rds(here("data", "output_data", "men.rds"))
+
+est_men <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + population + 
+                      low_educ + employed_for_wages + party +  
+                      low_income + married + race_White,
+                    data = men %>% filter(!state_id %in% c(2, 51))%>% 
+                    filter(!(state_id==34 & year==2019)),  
+                    EM = F, 
+                    index = c("state_id","year"),
+                    inference = "parametric", se = TRUE, 
+                    #min.T0 = 5, 
+                    r = c(0, 5), 
+                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p5 <- plot(est_men, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p5, here("figures", 'men att.png'))
+
+men_by_period <- est_men[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+#write_csv(men_by_period, here('tables', 'men_by_period.csv'), row.names = FALSE) 
+
+men_average <- data.frame(est_men$est.avg)
+
+#write_csv(men_average, here('tables', 'men_average.csv'), row.names = FALSE) 
+
+```
+## Women
+```{r, fig.show='hide', results = 'hide'}
+
+women <- read_rds(here("data", "output_data", "women.rds"))
+
+est_women <- gsynth(death ~ treatedpost + primary_rate + cardio_rate + population + 
+                    low_educ + employed_for_wages + party +  
+                    low_income + married + race_White,
+                  data = women %>% filter(!state_id %in% c(2, 51))%>% 
+                    filter(!(state_id==34 & year==2019)),  
+                  EM = F, 
+                  index = c("state_id","year"),
+                  inference = "parametric", se = TRUE, 
+                  #min.T0 = 5, 
+                  r = c(0, 5), 
+                  nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p6 <- plot(est_women, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+#save plot
+#ggsave(plot = p6, here("figures", 'women att.png'))
+
+women_by_period <- est_women[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+#write_csv(women_by_period, here('tables', 'women_by_period.csv'), row.names = FALSE) 
+
+women_average <- data.frame(est_women$est.avg)
+#write_csv(women_average, here('tables', 'women_average.csv'), row.names = FALSE) 
+
+```
+
+# Checking the parallel trends assumption
+## Overall
+```{r}
+overall <- read_rds(here("data", "output_data", "overall.rds"))
+
+parallel_all <- overall %>%
+  filter(post == 0)
+
+
+parallel_all_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                      population + 
+                                low_educ + employed_for_wages + party +  
+                                low_income + married + male + race_White, 
+                              data = parallel_all,
+                              fixed_effects=State,
+                              clusters = State, se_type = "stata")
+
+
+ifelse(parallel_all_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+
+#none
+```
+
+## Black
+```{r}
+black <- read_rds(here("data", "output_data", "black.rds"))
+parallel_black <- black %>%
+  filter(post == 0)
+
+
+parallel_black_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                population + 
+                                low_educ + employed_for_wages + party +  
+                                low_income + married + male, 
+                              data = parallel_black,
+                              fixed_effects=State,
+                              clusters = State, se_type = "stata")
+
+
+ifelse(parallel_black_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+
+#yes
+```
+
+## Hispanic
+```{r}
+hispanic <- read_rds(here("data", "output_data", "hispanic.rds"))
+parallel_hispanic <- hispanic %>%
+  filter(post == 0)
+
+
+parallel_hispanic_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                  population + 
+                                  low_educ + employed_for_wages + party +  
+                                  low_income + married + male, 
+                                data = parallel_hispanic,
+                                fixed_effects=State,
+                                clusters = State, se_type = "stata")
+
+
+ifelse(parallel_hispanic_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+
+#none
+```
+
+## White
+
+```{r}
+white <- read_rds(here("data", "output_data", "white.rds"))
+
+parallel_white <- white %>%
+  filter(post == 0)
+
+
+parallel_white_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                     population + 
+                                     low_educ + employed_for_wages + party +  
+                                     low_income + married + male, 
+                                   data = parallel_white,
+                                   fixed_effects=State,
+                                   clusters = State, se_type = "stata")
+
+
+ifelse(parallel_white_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+
+#none
+```
+## Men
+```{r}
+men <- read_rds(here("data", "output_data", "men.rds"))
+#parallel trend
+parallel_men <- men %>%
+  filter(post == 0)
+
+
+parallel_men_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                  population + 
+                                  low_educ + employed_for_wages + party +  
+                                  low_income + married + race_White, 
+                                data = parallel_men,
+                                fixed_effects=State,
+                                clusters = State, se_type = "stata")
+
+
+ifelse(parallel_men_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+
+#none
+```
+
+## Women
+```{r}
+women <- read_rds(here("data", "output_data", "women.rds"))
+women <- read_rds(here("data", "output_data", "women.rds"))
+parallel_women <- women %>%
+  filter(post == 0)
+
+
+parallel_women_res <- lm_robust(death ~ treated*year + primary_rate + cardio_rate + 
+                                population + 
+                                low_educ + employed_for_wages + party +  
+                                low_income + married + race_White, 
+                              data = parallel_women,
+                              fixed_effects=State,
+                              clusters = State, se_type = "stata")
+
+
+ifelse(parallel_women_res$p.value["treated:year"] <= 0.05,
+       "The interaction term coefficient IS significantly different from 0, parallel trend IS VIOLATED",
+       "The interaction term coefficients IS NOT significantly different from 0, parallel trend MIGHT BE OKAY")
+#none
+```
+
+# Manuscript Figures and Tables
+## Table 1: Baseline characteristics  
+**Baseline characheristics**
+```{r}
+overall <- read_rds(here("data", "output_data", "overall.rds"))
+tab <- overall %>% 
+filter(year==2014) %>% # keep the continuous var and the two categorical variables
+  select(party, primary_rate, cardio_rate, 
+         low_educ, employed_for_wages, party, death, 
+         low_income, married, male, race_White, treated) %>% 
+  tbl_summary(by = treated,
+              missing = 'no',
+              digits = list(all_continuous()~4,
+                            all_categorical()~2), 
+              statistic = list(all_continuous() ~ '{mean} ({sd})',
+                               all_categorical() ~ '{n} / {N} ({p}%)')) %>% 
+  bold_labels() %>% 
+  #modify_header(stat_by = '**{level}**') %>% 
+  modify_footnote(update = everything() ~ NA)
+
+tab
+
+#gtsave(tab %>% as_gt(), here('tables', 'table1.png'), vwidth = 1250, vheight = 50)
+#tab %>% as_flex_table() %>% flextable::save_as_docx(.,path=here("tables", "table1.docx"))
+```
+
+## Table 2: Overall and subgroup effect
+**Overall and subgroup effect of the Medicaid expansion on CVD mortality**
+```{r}
+overall_average <- read_csv(here('tables', "overall_average.csv"))
+overall_average$group='Overall'
+
+black_average <- read_csv(here('tables', "black_average.csv"))
+black_average$group='Black'
+
+hispanic_average <- read_csv(here('tables', "hispanic_average.csv"))
+hispanic_average$group='Hispanic'
+
+white_average <- read_csv(here('tables', "white_average.csv"))
+white_average$group='White'
+
+men_average <- read_csv(here('tables', "men_average.csv"))
+men_average$group='Men'
+
+women_average <- read_csv(here('tables', "women_average.csv"))
+women_average$group='Women'
+
+
+average_data <- rbind(overall_average, black_average, hispanic_average, 
+                 white_average, men_average, women_average)
+
+average_data$group <- factor(average_data$group, 
+                        levels=c('Overall', 'Black', 'Hispanic', 'White', 
+                                 'Men','Women'))
+
+average_table <- average_data %>% 
+  transmute(Group = group,
+            `Adjusted Mean Difference (95%CI)`= simulr::ci_fct(
+              pe=Estimate,
+              low=CI.lower,
+              high=CI.upper,
+              digit=2,
+              multiplier = 1,
+              scale = ""))
+
+knitr::kable(average_table) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+# average_table %>% flextable::flextable() %>% 
+#   flextable::save_as_docx(.,path=here("tables", "table2.docx"))
+```
+## Figure 1: Annual impact
+**Overall annual impact of Medicaid expansion on CVD deaths per 100,000 persons overall and by race and sex.**
+
+```{r fig.height=9.84, fig.width=5.90}
+
+overall_by_period <- read_csv(here('tables', "overall_by_period.csv"))
+black_by_period <- read_csv(here('tables', "black_by_period.csv"))
+hispanic_by_period <- read_csv(here('tables', "hispanic_by_period.csv"))
+white_by_period <- read_csv(here('tables', "white_by_period.csv"))
+men_by_period <- read_csv(here('tables', "men_by_period.csv"))
+women_by_period <- read_csv(here('tables', "women_by_period.csv"))
+
+f_overall <- overall_by_period %>% 
+  ggplot(aes(x = time, y = ATT)) +
+  geom_point(color="#030303") + 
+  geom_errorbar(aes( ymax = CI.lower, ymin = CI.upper) , width = .2, size = 0.7, 
+                color="#030303")+
+  geom_line(color="#030303") +
+  ylim(-60, 60)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  geom_hline(yintercept = 0, lty=2,color="#030303") +
+  ggtitle('Overall')+
+  labs(x = "Number of years since Medicaid Expansion",
+       y = "Change in CVD mortality, per 100,000 population") +
+  theme_classic(base_size = 15) +
+  theme(axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+
+f_black_hispanic_white <- bind_rows(black_by_period %>% mutate(group="black"),
+                                    hispanic_by_period %>% mutate(group="hispanic"),
+                                    white_by_period %>% mutate(group="white")) %>% 
+  ggplot(aes(x = time, y = ATT, color = group)) +
+  scale_color_manual(values=c("#8A2BE2", "#FF7F50", "#458B00"), 
+                     labels=c('Black',   'Hispanic','White'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = CI.upper, ymin = CI.lower) , width = .2, 
+                 position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-60, 60)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  #ggtitle('B')+
+  geom_hline(yintercept = 0, lty=2, color="black") +
+  theme(legend.position = "top",
+        axis.title = element_blank(),
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank())
+
+f_men_women <- bind_rows(men_by_period %>% mutate(group="men"),
+                         women_by_period %>% mutate(group="women")) %>% 
+  ggplot(aes(x = time, y = ATT, color = group)) +
+  scale_color_manual(values=c("#1874CD", "#EE3B3B"), 
+                     labels=c('Men','Women'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = CI.upper, ymin = CI.lower) , width = .2, 
+                 position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-60, 60)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  #ggtitle('B')+
+  geom_hline(yintercept = 0, lty=2, color="black") +
+  theme(legend.position = "top",
+        axis.title = element_blank(),
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank())
+
+f_by_overall_race_sex <- ggarrange(f_overall, f_black_hispanic_white, f_men_women,
+                                   ncol = 1, nrow=3) %>% 
+  annotate_figure(left = textGrob("Change in CVD mortality, per 100,000 population", 
+                                  rot = 90, vjust = 1, gp = gpar(cex = 1.3)), #cex = 0.8
+                  bottom = textGrob("Number of years since Medicaid Expansion", gp = gpar(cex = 1.3)))
+
+f_by_overall_race_sex
+# ggsave(plot=f_by_overall_race_sex,
+#        filename=here('figures', 'figure1_annual_impact_overall_race_sex.png'), 
+#        width = 15, height = 25, units = "cm") 
+```
+## Figure 2. Pre-treatment fit
+**Pre-treatment fit showing the observed CVD deaths per 100,000 persons along with the counterfactual (synthetic control). Vertical line represents the beginning of expansion. The solid line is expansion state, dashed line is the synthetic control.**
+
+```{r fig.height=14.17, fig.width=17.33}
+p1_6_fit <- ggarrange(
+  p1+ rremove("ylab") + rremove("xlab")+ggtitle("Overall"), 
+  p2+ rremove("ylab") + rremove("xlab")+ggtitle("Black"),
+  p3+ rremove("ylab") + rremove("xlab")+ggtitle("Hispanic"),
+  p4+ rremove("ylab") + rremove("xlab")+ggtitle("White"),
+  p5+ rremove("ylab") + rremove("xlab")+ggtitle("Men"),
+  p6+ rremove("ylab") + rremove("xlab")+ggtitle("Women"),
+  font.label = list(size = 2, color = "black", face = "bold", family = NULL),
+  ncol=2, nrow=3,common.legend = TRUE)
+
+
+p1_6_fit
+# ggsave(plot=p1_6_fit,
+#        filename=here('figures', 'figure2_pre_treatment_fit.png'), 
+#        width = 44, height = 36, units = "cm")
+```
+
+## Figure 3: Analytical data structure
+**Analytical data structure of the Medicaid expansion states and control states for the overall study population.**
+```{r fig.height=7.09, fig.width=8.66}
+q1 <- panelview(death ~treatedpost , data=overall, index=c("State","year"), 
+                pre.post= TRUE,
+                cex.axis.x=20,
+                cex.axis.y=20,
+                cex.lab=20)
+q1
+# ggsave(plot=q1, filename=here('figures', 'figure3_data_structure_overall.png'), 
+#        width = 22, height = 18)
+```
+## eTable 1: STROBE Statement—Checklist (See Appendix)  
+
+## eTable 2: Numeric values for Figure 1   
+```{r paged.print=TRUE}
+average_by_period_table <- 
+  bind_rows(overall_by_period %>%  mutate(group="Overall"),
+            black_by_period %>% mutate(group="Black"),
+            hispanic_by_period %>% mutate(group="Hispanic"),
+            white_by_period %>% mutate(group="White"),
+            men_by_period %>% mutate(group="Men"),
+            women_by_period %>% mutate(group="Women")) %>% 
+  mutate(`Adjusted Mean Difference (95%CI)`= simulr::ci_fct(
+    pe=ATT,
+    low=CI.lower,
+    high=CI.upper,
+    digit=2,
+    multiplier = 1,
+    scale = "")) %>% 
+  dplyr::select(group, time, `Adjusted Mean Difference (95%CI)`)
+average_by_period_table %>% 
+  knitr::kable() %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+average_by_period_table %>% 
+  pivot_wider(names_from = time, 
+              values_from = `Adjusted Mean Difference (95%CI)`) %>% 
+  flextable::flextable() %>% 
+  flextable::save_as_docx(.,path=here("tables", "etable2.docx"))
+```
+## eFigure 1: Data structure (black, hispanic, white)
+**Analytical data structure of Medicaid expansion states and control states for Blacks, Hispanics and Whites.**
+
+```{r,fig.height=14.17, fig.width=17.32}
+q2 <- panelview(death ~treatedpost , data=black, index=c("State","year"), 
+                pre.post= TRUE)
+#ggsave(here('figures', 'PV_black.png'), width = 15, height = 10)
+
+q3 <- panelview(death ~treatedpost , data=hispanic, index=c("State","year"),
+                pre.post= TRUE)
+#ggsave(here('figures', 'PV_hispanic.png'), width = 15, height = 10)
+
+q4 <- panelview(death ~treatedpost , data=white, index=c("State","year"), 
+                pre.post= TRUE)
+#ggsave(here('figures', 'PV_white.png'), width = 15, height = 10)
+
+ggarrange(q2+ rremove("ylab") + rremove("xlab")+ggtitle("Black"), 
+          q3+ rremove("ylab") + rremove("xlab")+ggtitle("Hispanic"),
+          q4+ rremove("ylab") + rremove("xlab")+ggtitle("White"),
+          ncol=1, nrow=3,common.legend = TRUE,
+          cex.axis.x=20,
+          cex.axis.y=20,
+          cex.lab=20)
+
+# ggsave(here('figures', 'efigure1_data_structure_black_hispanic_white.png'), 
+#        width = 36, height = 44, units = "cm")
+```
+## eFigure 2: Data structure (men and women)
+**Analytical data structure of Medicaid expansion states and control states for men and women.**
+```{r fig.height=23.62, fig.width=15.75}
+q5 <- panelview(death ~treatedpost , data=men, index=c("State","year"), pre.post= TRUE)
+#ggsave(here('figures', 'PV_men.png'), width = 15, height = 10)
+
+q6 <- panelview(death ~treatedpost , data=women, index=c("State","year"), pre.post= TRUE)
+#ggsave(here('figures', 'PV_women.png'), width = 15, height = 10)
+
+ggarrange(q5+ rremove("ylab") + rremove("xlab")+ggtitle("Men"), 
+          q6+ rremove("ylab") + rremove("xlab")+ggtitle("Women"),
+          ncol=1, nrow=2,common.legend = TRUE,
+          cex.axis.x=20,
+          cex.axis.y=20,
+          cex.lab=20)
+
+# ggsave(here('figures', 'efigure2_data_structure_men_women.png'), 
+#        width = 40, height = 60, units = "cm")
+```
+
+## eTable 3:Triple difference over time (interaction)
+
+```{r paged.print=TRUE}
+### Black or Hispanic vs White
+ddd_black_hispanic_vs_white <- bind_rows(black_by_period %>% mutate(group="black"),
+                hispanic_by_period %>% mutate(group="hispanic"),
+                white_by_period %>% mutate(group="white")) %>% 
+  dplyr::select(time, group, ATT, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean_black=ATT_black-ATT_white,
+            se_black=sqrt(se_black^2 + se_white^2),
+            lower_black=round((mean_black-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            upper_black=round((mean_black+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            pvalue_black=round(pnorm(0,mean=abs(mean_black),sd=se_black) + 
+              (1 - pnorm(0,mean=-abs(mean_black),sd=se_black)),2),
+            mean_hispanic=ATT_hispanic-ATT_white,
+            se_hispanic=sqrt(se_hispanic^2 + se_white^2),
+            lower_hispanic=round((mean_hispanic-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2),
+            upper_hispanic=round((mean_hispanic+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2),
+            pvalue_hispanic=round(pnorm(0,mean=abs(mean_hispanic),sd=se_hispanic) + 
+              (1 - pnorm(0,mean=-abs(mean_hispanic),sd=se_hispanic)),2),
+            time=time) %>% 
+  relocate(time) %>% pivot_longer(cols=-time,
+               names_to = c(".value", "race"),
+               names_sep="_") %>% 
+  arrange(race)
+
+
+### Women vs men
+ddd_women_vs_men <- bind_rows(men_by_period %>% mutate(group="men"),
+                women_by_period %>% mutate(group="women")) %>% 
+  dplyr::select(time, group, ATT, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean=ATT_women-ATT_men,
+            se=sqrt(se_men^2 + se_women^2),
+            lower=round((mean-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            upper=round((mean+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            pvalue=round(pnorm(0,mean=abs(mean),sd=se) + 
+              (1 - pnorm(0,mean=-abs(mean),sd=se)),2),
+            time=time) %>% 
+  relocate(time)
+
+ddd_table <- bind_rows(ddd_black_hispanic_vs_white, ddd_women_vs_men) %>% 
+  rename(group = race) %>% 
+  mutate(group = case_when(group=="black"~"Black vs White",
+                           group=="hispanic"~"Hispanic vs White",
+                           TRUE~"Women vs men")) %>% 
+  mutate(`Adjusted Difference in Mean Difference (95%CI)`= simulr::ci_fct(
+    pe=mean,
+    low=lower,
+    high=upper,
+    digit=2,
+    multiplier = 1,
+    scale = "")) %>% 
+  dplyr::select(Group= group, Time=time, `Adjusted Difference in Mean Difference (95%CI)`, `P-value`= pvalue)
+
+# ddd_table %>% flextable::flextable() %>% 
+#   flextable::save_as_docx(.,path=here("tables", "etable3.docx"))
+
+ddd_table %>% 
+  knitr::kable() %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+```
+
+
+
+
+
+
+
+
