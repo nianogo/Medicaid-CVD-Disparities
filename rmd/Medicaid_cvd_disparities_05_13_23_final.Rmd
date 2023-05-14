@@ -1,0 +1,815 @@
+---
+title: "Medicaid-CVD manuscript"
+author: "Anonymized for review"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: kable
+    mathjax: default
+    number_sections: yes
+    theme: lumen
+    highlight: tango
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE
+)
+
+if (!require("pacman")){
+  install.packages("pacman", repos = 'http://cran.us.r-project.org')
+} # a nice package to load several packages simultaneously
+
+p_load("tidyverse","magrittr","broom",        #manipulate data
+          "mise",                                #directory management
+          "here",                                #directory   
+          'readxl', #read_excel
+          'labelled',
+          'tidycensus',#FIPS code for states and counties
+          "gtsummary",
+          'haven',#read_sas()
+          "glue",
+          'readxl',
+          'progress',
+          'beepr',
+          "gsynth",    #for implementing the g-synthetic control: gsynth()
+          "panelView", #for displaying the data: panelView()
+          "lme4",      #For multilevel analysis: lmer()
+          "estimatr",  #for robust standard error: lm_robust()
+          "metafor",    #for meta-analysis
+          'extrafont',  #windows font
+          "usdata",      #convert fips to state name: convert_fips_to_names()
+          "formattable", #modify decimal places of numeric values: digits()
+          "flextable",   #for nice tables
+          "codebook",    #amazing package to set labels: dict_to_list()
+          "datapasta",   #Copying tables from Excel, Jupyter, and websites: tribble_paste(), vector_paste()
+          "fastDummies", #create dummy variables: dummy_cols(),
+          "cdlTools",    #convert state name to fips code: fips()
+          "survey",      #to analyze complex survey design data: svydesign()
+          "srvyr",       #to analyze complex survey design data with dplyr: as_survey_design()
+          "priceR",       #to adjust for inflation adjust_for_inflation()) # package names
+          'panelView',
+          'estimatr',  #for the lm_robust() function
+          'readr', #read in txt file, read_tsv()
+          'gt',#gtsave()
+          'ggpubr',#ggarrange()
+          'forestmangr',#round_df()
+          'gridExtra',
+          'grid',
+          'lattice')
+```
+
+
+
+# Loading the analytical data  
+
+
+```{r, results='hide'}
+overall <- read_rds(here("data", "output_data", "overall.rds"))
+
+black_miss <- read_rds(here("data", "output_data", "black.rds")) 
+
+black_complete <- read_rds(here("data", "output_data", "black.rds")) %>% 
+  #removed states with partially missing data (i.e., between 4 and 19 yearly outcome data
+  #missing)  #for four states (Alaska, New Mexico, Rhode Island, Utah) and completely
+  #missing   #for nine states (Hawaii, Idaho, Maine, Montana, New Hampshire, North Dakota,
+  #South Dakota, Vermont, Wyoming. Total removed (n=4 + 9 = 13)
+  filter(!(state %in% c('Alaska', 'New Mexico','Rhode Island', 'Utah',
+                        
+                        'Hawaii', 'South Dakota',
+                        'Idaho', 'Maine', 'Montana', 'New Hampshire',
+                        'North Dakota', 'Vermont', 'Wyoming')))
+
+hispanic_miss <- read_rds(here("data", "output_data", "hispanic.rds"))
+
+hispanic_complete <- read_rds(here("data", "output_data", "hispanic.rds")) %>% 
+  #removed states with partially missing data (i.e., between 4 and 19 yearly outcome data missing) 
+  # for twelve (12) states (Alabama, Arkansas, Idaho, Iowa, Kentucky, Louisiana, 
+  # Minnesota, Nebraska, Rhode Island, South Carolina, Tennessee, Wisconsin) and completely missing for 
+  # eleven (11) states (Alaska, Delaware, Maine, Mississippi, Montana, New Hampshire, 
+  # North Dakota, South Dakota, Vermont, West Virginia, Wyoming). Total removed (n=11+12 = 23)
+  filter(!state %in% c("Alabama", "Arkansas", "Idaho", "Iowa", "Kentucky", 
+                       "Louisiana", "Minnesota", "Nebraska", "Rhode Island",
+                       "South Carolina", "Tennessee", "Wisconsin",
+                       
+                       "Alaska","Delaware","Maine","Mississippi","Montana",
+                       "New Hampshire","North Dakota",  "South Dakota",  
+                       "Vermont","West Virginia", "Wyoming")) %>% 
+  #We imputed below outcome data for the six states with minimal missing (Kansas, 
+  # Maryland, Missouri, North Carolina, Oregon, Utah). We imputed the 
+  # outcome data with the closest outcome data (previous/next year) given 
+  # that excluding these six states will have prevented the generalized 
+  # synthetic control method from working
+  arrange(state, year) %>% 
+  dplyr::group_by(state) %>%
+  fill(c("cvd_death_rate", "population"), .direction = "downup") %>%
+  dplyr::ungroup() 
+
+white <- read_rds(here("data", "output_data", "white.rds")) 
+
+men <- read_rds(here("data", "output_data", "men.rds")) 
+
+women <- read_rds(here("data", "output_data", "women.rds"))
+
+```
+
+# Analyzing the data using the generalzied SCM
+## Overall
+
+```{r, fig.show='hide', results = 'hide'}
+
+est_overall <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + male + race_nonwhite,
+                      data = overall,
+                      EM = F, 
+                      index = c("state_id","year"),
+                      inference = "parametric", se = TRUE, 
+                      r = c(0, 5), 
+                      seed = 123,
+                      nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+
+#ATT plot
+p1 <- plot(est_overall, type = "counterfactual", raw = "none", 
+           theme.bw = TRUE, main = "", #ylim = c(120, 200), 
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+
+overall_by_period <- est_overall[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+overall_average <- data.frame(est_overall$est.avg)
+overall_average
+```
+
+## Black
+```{r, fig.show='hide', results = 'hide'}
+
+est_black <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + male,
+                    data = black_complete, 
+                    EM = F, 
+                    index = c("state_id","year"),
+                    inference = "parametric", se = TRUE, 
+                    r = c(0, 5), 
+                    seed = 123,
+                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+
+p2 <- plot(est_black, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+
+
+black_by_period <- est_black[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+black_average <- data.frame(est_black$est.avg)
+black_average
+```
+
+## Hispanic
+```{r, fig.show='hide', results = 'hide'}
+
+est_hispanic <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + male,
+                       data = hispanic_complete,
+                       EM = F,
+                       index = c("state_id","year"),
+                       inference = "parametric", se = TRUE,
+                       r = c(0, 5),
+                       seed = 123,
+                       nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p3 <- plot(est_hispanic, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+
+hispanic_by_period <- est_hispanic[["est.att"]] %>%
+  as.data.frame() %>%
+  rownames_to_column(var= "time") %>%
+  mutate(time=as.numeric(time)) %>%
+  dplyr::filter(time>=0)
+
+hispanic_average <- data.frame(est_hispanic$est.avg)
+hispanic_average
+
+```
+## White
+```{r, fig.show='hide', results = 'hide'}
+
+est_white <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + male,
+                    data = white,  
+                    EM = F, 
+                    index = c("state_id","year"),
+                    inference = "parametric", se = TRUE, 
+                    r = c(0, 5), 
+                    seed = 123,
+                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p4 <- plot(est_white, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+
+white_by_period <- est_white[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+white_average <- data.frame(est_white$est.avg)
+white_average
+```
+
+## Men
+```{r, fig.show='hide', results = 'hide'}
+
+est_men <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + race_nonwhite,
+                  data = men,  
+                  EM = F, 
+                  index = c("state_id","year"),
+                  inference = "parametric", se = TRUE, 
+                  r = c(0, 5), 
+                  seed = 123,
+                  nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p5 <- plot(est_men, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+men_by_period <- est_men[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+men_average <- data.frame(est_men$est.avg)
+men_average
+
+```
+
+## Women
+```{r, fig.show='hide', results = 'hide'}
+
+est_women <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                        cardio_rate + population + 
+                        low_educ + employed_for_wages + party +  
+                        low_income + married + race_nonwhite,
+                    data = women,  
+                    EM = F, 
+                    index = c("state_id","year"),
+                    inference = "parametric", se = TRUE, 
+                    r = c(0, 5), 
+                    seed = 123,
+                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+p6 <- plot(est_women, type = "counterfactual", raw = "none", theme.bw = TRUE, main = "",#ylim = c(220, 475),  
+           legendOff = TRUE, xlab = "", ylab = "") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.x = element_text(angle = 90, vjust = 0.5),
+        plot.margin = margin(10, 10, 50, 10))
+
+women_by_period <- est_women[["est.att"]] %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var= "time") %>% 
+  mutate(time=as.numeric(time)) %>% 
+  dplyr::filter(time>=0)
+
+women_average <- data.frame(est_women$est.avg)
+women_average
+
+```
+
+
+# Manuscript Figures and Tables
+## Table 1: Baseline characteristics  
+**Baseline characheristics**
+```{r}
+## Table 1: Baseline Characteristics----
+
+tab <- overall %>% 
+  filter(year==2014) %>% 
+  set_variable_labels(
+    cvd_death_rate = "CVD deaths per 100,000 persons aged 45-64 years",
+    primarycare_rate = "Primary care clinicians per 100,000 residents",
+    cardio_rate = "Cardiologists per 100,000 residents",
+    low_income = "Percentage of residents aged 45-64 years with annual income less than $15,000",
+    male = "Percentage of residents aged 45-64 years who are males",
+    race_nonwhite = "Percentage of residents aged 45-64 years who are Non-White",
+    married = "Percentage of residents aged 45-64 years who are married",
+    low_educ = "Percentage of residents aged 45-64 years without high school degree",
+    employed_for_wages = "Percentage of residents aged 45-64 years who are employed for wages",
+    party = "Percentage of political party") %>% 
+  select(cvd_death_rate, primarycare_rate, cardio_rate,low_income,
+         male, race_nonwhite, married, low_educ, employed_for_wages,
+         party, treated) %>% 
+  mutate_at(vars(low_educ, employed_for_wages, 
+                 low_income, married, male, race_nonwhite), multiply_by, e2=100) %>% 
+  set_value_labels(treated = c("Medicaid Non-Expansion States"= 0,
+                               "Medicaid Expansion States"=1),
+                   party = c("Republican"=0, "Democrat"=1, "Split"=2)) %>% 
+  modify_if(is.labelled, to_factor) %>% 
+  tbl_summary(by = treated,
+              missing = 'no',
+              digits = list(all_continuous()~1,
+                            all_categorical()~1), 
+              statistic = list(all_continuous() ~ '{mean} ({sd})',
+                               all_categorical() ~ '{n} ({p}%)')) %>% 
+    modify_header(label = "**Characteristics**") %>%
+    add_overall() %>%
+    add_stat_label(location = "row") %>%
+    modify_spanning_header(c("stat_1","stat_2") ~ "**State Medicaid Expansion Status**") %>% bold_labels()
+
+tab
+```
+
+## Table 2: Overall and subgroup effect
+**Overall and subgroup effect of the Medicaid expansion on CVD mortality**
+```{r}
+overall_average$group='overall'
+
+black_average$group='black'
+
+hispanic_average$group='hispanic'
+
+white_average$group='white'
+
+men_average$group='men'
+
+women_average$group='women'
+
+
+average_data <- rbind(overall_average, black_average, hispanic_average, 
+                 white_average, men_average, women_average)
+
+average_data$group <- factor(average_data$group, 
+                        levels=c('overall', 'black', 'hispanic', 'white', 
+                                 'men','women'))
+
+average_table <- average_data %>% 
+  transmute(Group = group,
+            `Adjusted Mean Difference (95%CI)`= paste(digits(Estimate,2),"", " " ,"(",
+                                                   digits(CI.lower,2),", ",
+                                                   digits(CI.upper,2), ")", sep=""))
+            
+
+knitr::kable(average_table, caption = "Overall and subgroup effect of the Medicaid expansion on CVD mortality") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+
+# tripple difference in difference
+
+ddd_black_hispanic_vs_white_overall <- bind_rows(black_average,
+                                         hispanic_average,
+                                         white_average) %>% 
+  dplyr::select(group, ATT=Estimate, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean_black=round((ATT_black-ATT_white), 2),
+            se_black=sqrt(se_black^2 + se_white^2),
+            lower_black=round((mean_black-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            upper_black=round((mean_black+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            mean_hispanic=round((ATT_hispanic-ATT_white), 2),
+            se_hispanic=sqrt(se_hispanic^2 + se_white^2),
+            lower_hispanic=round((mean_hispanic-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2),
+            upper_hispanic=round((mean_hispanic+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2)) %>% 
+   pivot_longer(cols=everything(),
+                names_to = c(".value", "race"),
+                names_sep="_") %>% 
+  arrange(race)
+
+
+
+ddd_women_vs_men_overall <- bind_rows(men_average,
+                                        women_average) %>% 
+  dplyr::select(group, ATT=Estimate, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean=round((ATT_women-ATT_men), 2),
+            se=sqrt(se_men^2 + se_women^2),
+            lower=round((mean-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            upper=round((mean+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2))
+
+
+bind_rows(ddd_black_hispanic_vs_white_overall, ddd_women_vs_men_overall) %>% 
+  rename(group = race) %>% 
+  mutate(group = case_when(group=="black"~"Black vs White",
+                           group=="hispanic"~"Hispanic vs White",
+                           TRUE~"Women vs men")) %>% 
+  mutate(`Adjusted Difference in Mean Difference (95%CI)`= paste(digits(mean,2),"", " " ,"(",
+                                                                 digits(lower,2),", ",
+                                                                 digits(upper,2), ")", sep="")) %>% 
+  dplyr::select(Group= group,`Adjusted Difference in Mean Difference (95%CI)`) %>% 
+  knitr::kable(caption = "Difference in mean differences") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+```
+## Figure 1: Analytical data structure
+**Analytical data structure of the Medicaid expansion states and control states for the overall study population.**
+```{r fig.height=23.62, fig.width=15.75}
+
+q1 <- panelview(cvd_death_rate ~treatedpost , data=overall, index=c("state","year"), 
+                pre.post= TRUE,
+                cex.axis.x=20,
+                cex.axis.y=20,
+                cex.lab=20)
+```
+
+
+## Figure 2: Annual effect
+**Overall annual effect of Medicaid expansion on CVD deaths per 100,000 persons overall and by race and sex.**
+
+```{r fig.height=9.84, fig.width=5.90}
+
+f_overall <- overall_by_period %>% 
+  ggplot(aes(x = time, y = ATT)) +
+  geom_point(color="#030303") + 
+  geom_errorbar(aes( ymax = CI.lower, ymin = CI.upper) , width = .2, size = 0.7, 
+                color="#030303")+
+  geom_line(color="#030303") +
+  ylim(-38, 38)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  geom_hline(yintercept = 0, lty=2,color="#030303") +
+  ggtitle('Overall')+
+  labs(x = "Number of years since Medicaid Expansion",
+       y = "Change in CVD mortality, per 100,000 population") +
+  theme_classic(base_size = 15) +
+  theme(axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+
+f_black_hispanic_white <- bind_rows(black_by_period %>% mutate(group="black"),
+                                    hispanic_by_period %>% mutate(group="hispanic"),
+                                    white_by_period %>% mutate(group="white")) %>% 
+  ggplot(aes(x = time, y = ATT, color = group)) +
+  scale_color_manual(values=c("#8A2BE2", "#FF7F50", "#458B00"), 
+                     labels=c('Black',   'Hispanic','White'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = CI.upper, ymin = CI.lower) , width = .2, 
+                 position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-38, 38)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  #ggtitle('B')+
+  geom_hline(yintercept = 0, lty=2, color="black") +
+  theme(legend.position = "top",
+        axis.title = element_blank(),
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank())
+
+f_men_women <- bind_rows(men_by_period %>% mutate(group="men"),
+                         women_by_period %>% mutate(group="women")) %>% 
+  ggplot(aes(x = time, y = ATT, color = group)) +
+  scale_color_manual(values=c("#1874CD", "#EE3B3B"), 
+                     labels=c('Men','Women'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = CI.upper, ymin = CI.lower) , width = .2, 
+                 position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-38, 38)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  #ggtitle('B')+
+  geom_hline(yintercept = 0, lty=2, color="black") +
+  theme(legend.position = "top",
+        axis.title = element_blank(),
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank())
+
+f_by_overall_race_sex <- ggarrange(f_overall, f_black_hispanic_white, f_men_women,
+                                   ncol = 1, nrow=3) %>% 
+  annotate_figure(left = textGrob("Change in CVD mortality, per 100,000 population", 
+                                  rot = 90, vjust = 1, gp = gpar(cex = 1.3)), #cex = 0.8
+                  bottom = textGrob("Number of years since Medicaid Expansion", gp = gpar(cex = 1.3)))
+
+f_by_overall_race_sex
+```
+## Figure 3. Pre-treatment fit  
+**Pre-treatment fit showing the observed CVD deaths per 100,000 persons along with the counterfactual (synthetic control). Vertical line represents the beginning of expansion. The solid line is expansion state, dashed line is the synthetic control.**
+
+```{r fig.height=14.17, fig.width=17.33}
+p1_6_fit <- ggarrange(
+  p1+ rremove("ylab") + rremove("xlab")+ggtitle("Overall"), 
+  p2+ rremove("ylab") + rremove("xlab")+ggtitle("Black"),
+  p3+ rremove("ylab") + rremove("xlab")+ggtitle("Hispanic"),
+  p4+ rremove("ylab") + rremove("xlab")+ggtitle("White"),
+  p5+ rremove("ylab") + rremove("xlab")+ggtitle("Men"),
+  p6+ rremove("ylab") + rremove("xlab")+ggtitle("Women"),
+  font.label = list(size = 2, color = "black", face = "bold", family = NULL),
+  ncol=2, nrow=3,common.legend = TRUE)
+
+
+p1_6_fit
+```
+
+
+## eTable 1: STROBE Statement—Checklist (See Appendix)  
+
+## eTable 2: Numeric values for Figure 1  
+**Overall annual effect of the Medicaid expansion on CVD deaths per 100,000 persons for overall population and for the Black, Hispanic, White, Men and women subpopulations.**
+```{r paged.print=TRUE}
+average_by_period_table <- 
+  bind_rows(overall_by_period %>%  mutate(group="Overall"),
+            black_by_period %>% mutate(group="Black"),
+            hispanic_by_period %>% mutate(group="Hispanic"),
+            white_by_period %>% mutate(group="White"),
+            men_by_period %>% mutate(group="Men"),
+            women_by_period %>% mutate(group="Women")) %>% 
+  mutate(`Adjusted Mean Difference (95%CI)`= paste(digits(ATT,2),"", " " ,"(",
+                                                   digits(CI.lower,2),", ",
+                                                   digits(CI.upper,2), ")", sep="")) %>% 
+  dplyr::select(group, time, `Adjusted Mean Difference (95%CI)`)
+average_by_period_table %>% 
+  knitr::kable(caption = "Overall annual effect of the Medicaid expansion on CVD deaths per 100,000 persons for the overall population and for the Black, Hispanic, White, Men and women subpopulations") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+```
+
+
+## eTable 3: Sensitivity analysis  
+**Sensitivity analysis evaluating the effect of using heterogenous samples vs homogenous samples on both adjusted mean differences and difference in mean differences.**
+
+```{r fig.show='hide', message=FALSE, warning=FALSE}
+
+#Whites with black sample (n=37 states included)
+white_withblacksample <- read_rds(here("data", "output_data", "white.rds")) %>% 
+    filter(!(state %in% c('Alaska', 'New Mexico','Rhode Island', 'Utah',
+                        
+                        'Hawaii', 'South Dakota',
+                        'Idaho', 'Maine', 'Montana', 'New Hampshire',
+                        'North Dakota', 'Vermont', 'Wyoming')))
+
+est_white_withblacksample <- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                         cardio_rate + population + 
+                         low_educ + employed_for_wages + party +  
+                         low_income + married + male,
+                       data = white_withblacksample,
+                       EM = F,
+                       index = c("state_id","year"),
+                       inference = "parametric", se = TRUE,
+                       #min.T0 = 5,
+                       r = c(0, 5),
+                       seed = 123,
+                       nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+est_white_withblacksample_average <- data.frame(est_white_withblacksample$est.avg)
+
+est_white_withblacksample_average %>% 
+  knitr::kable(caption = "Sensitivity analysis for the adjusted mean difference: Whites and Blacks have same sample (n=37)") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+#Whites with Hispanic sample (n=27 states included)
+
+white_withhispanicsample <- read_rds(here("data", "output_data", "white.rds")) %>% 
+  filter(!state %in% c("Alabama", "Arkansas", "Idaho", "Iowa", "Kentucky", 
+                       "Louisiana", "Minnesota", "Nebraska", "Rhode Island",
+                       "South Carolina", "Tennessee", "Wisconsin",
+                       
+                       "Alaska","Delaware","Maine","Mississippi","Montana",
+                       "New Hampshire","North Dakota",  "South Dakota",  
+                       "Vermont","West Virginia", "Wyoming")) 
+
+est_white_withhispanicsample<- gsynth(cvd_death_rate ~ treatedpost + primarycare_rate + 
+                                      cardio_rate + population + 
+                                      low_educ + employed_for_wages + party +  
+                                      low_income + married + male,
+                                    data = white_withhispanicsample,
+                                    EM = F,
+                                    index = c("state_id","year"),
+                                    inference = "parametric", se = TRUE,
+                                    #min.T0 = 5,
+                                    r = c(0, 5),
+                                    seed = 123,
+                                    nboots = 200, CV = TRUE, force = "two-way", parallel = FALSE)
+
+est_white_withhispanicsample_average <- data.frame(est_white_withhispanicsample$est.avg)
+
+est_white_withhispanicsample_average %>% 
+  knitr::kable(caption = "Sensitivity analysis for the adjusted mean difference: Whites and Hispanics have same sample (n=27)") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+ddd_black_vs_white_overall_homosample <- bind_rows(black_average %>%
+                                                     mutate(group="black"),
+  est_white_withblacksample_average %>%
+  mutate(group="white")) %>% 
+  dplyr::select(group, ATT=Estimate, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean=round((ATT_black-ATT_white), 2),
+            se=sqrt(se_black^2 + se_white^2),
+            lower=round((mean-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            upper=round((mean+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            pvalue=round(pnorm(0,mean=abs(mean),sd=se) + 
+                           (1 - pnorm(0,mean=-abs(mean),sd=se)),2))
+
+ddd_black_vs_white_overall_homosample %>% 
+  knitr::kable(caption = "Sensitivity analysis for the difference in mean differences: Whites and Blacks have same sample (n=37)") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+ddd_hispanic_vs_white_overall_homosample <- bind_rows(hispanic_average %>%
+                                                        mutate(group="hispanic"),
+  est_white_withhispanicsample_average %>% mutate(group="white")) %>% 
+  dplyr::select(group, ATT=Estimate, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean=round((ATT_hispanic-ATT_white), 2),
+            se=sqrt(se_hispanic^2 + se_white^2),
+            lower=round((mean-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            upper=round((mean+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            pvalue=round(pnorm(0,mean=abs(mean),sd=se) + 
+                           (1 - pnorm(0,mean=-abs(mean),sd=se)),2))
+
+ddd_hispanic_vs_white_overall_homosample %>% 
+  knitr::kable(caption = "Sensitivity analysis for the difference in mean differences: Whites and Hispanics have same sample (n=27)") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "bordered"),
+                full_width = F)
+
+```
+## eFigure 1: Missing data Data structure for Blacks
+**Analytical data structure of Medicaid expansion states and control states for Blacks (before and after removing states with missing outcomes.**
+
+```{r,fig.height=14.17, fig.width=17.32}
+
+
+qblack_miss <- panelview(cvd_death_rate ~treatedpost , data=black_miss, index=c("state","year"), pre.post= TRUE)
+
+
+qblack_complete <- panelview(cvd_death_rate ~treatedpost , data=black_complete, index=c("state","year"), pre.post= TRUE)
+
+
+ggarrange(qblack_miss+ rremove("ylab") + rremove("xlab")+ggtitle("Black (with missing data)"), 
+          qblack_complete+ rremove("ylab") + rremove("xlab")+ggtitle("Black (with complete data)"),
+          ncol=1, nrow=2,
+          common.legend = TRUE)
+
+```
+
+## eFigure 2: Missing data Data structure for Hispanics
+**Analytical data structure of Medicaid expansion states and control states for Hispanics (before and after removing states with missing outcomes and nearest year imputation).**
+```{r fig.height=23.62, fig.width=15.75}
+
+qhispanic_miss <- panelview(cvd_death_rate ~treatedpost , 
+                            data=hispanic_miss, index=c("state","year"), 
+                            pre.post= TRUE)
+
+qhispanic_complete <- panelview(cvd_death_rate ~treatedpost , data=hispanic_complete, index=c("state","year"), pre.post= TRUE)
+
+
+ggarrange(qhispanic_miss+ rremove("ylab") + rremove("xlab")+ggtitle("Hispanic (with missing data)"), 
+          qhispanic_complete+ rremove("ylab") + rremove("xlab")+ggtitle("Hispanic (with complete and imputed data)"),
+          ncol=1, nrow=2,
+          common.legend = TRUE)
+```
+
+## eFigure 3:Annual triple difference over time 
+**Annual difference in mean difference between the effect of the Medicaid expansion on CVD deaths per 100,000 persons**  
+
+```{r fig.height=5.90, fig.width=7}
+
+## Black or Hispanic vs White-
+
+ddd_black_hispanic_vs_white_by_period <- bind_rows(black_by_period %>% mutate(group="black"),
+                hispanic_by_period %>% mutate(group="hispanic"),
+                white_by_period %>% mutate(group="white")) %>% 
+  dplyr::select(time, group, ATT, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean_black=round((ATT_black-ATT_white), 2),
+            se_black=sqrt(se_black^2 + se_white^2),
+            lower_black=round((mean_black-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            upper_black=round((mean_black+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_black), 2),
+            mean_hispanic=round((ATT_hispanic-ATT_white), 2),
+            se_hispanic=sqrt(se_hispanic^2 + se_white^2),
+            lower_hispanic=round((mean_hispanic-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2),
+            upper_hispanic=round((mean_hispanic+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se_hispanic), 2),
+            time=time) %>% 
+  relocate(time) %>% pivot_longer(cols=-time,
+               names_to = c(".value", "race"),
+               names_sep="_") %>% 
+  arrange(race)
+
+s1 <- ddd_black_hispanic_vs_white_by_period %>% 
+  ggplot(aes(x = time, y = mean, color = race)) +
+  scale_color_manual(values=c('#e41a1c', '#377eb8'), labels=c('Black vs White', 'Hispanic vs White'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = upper, ymin = lower) , width = .2, position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-38, 38)+
+  scale_x_continuous(breaks=seq(0,6,1))+
+  geom_hline(yintercept = 0, lty=2) +
+  theme(legend.position = "top",
+        axis.title = element_blank(),
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank())
+
+## Women vs men
+
+ddd_women_vs_men_by_period <- bind_rows(men_by_period %>% mutate(group="men"),
+                women_by_period %>% mutate(group="women")) %>% 
+  dplyr::select(time, group, ATT, CI.lower, CI.upper, se=S.E.) %>% 
+  pivot_wider(., names_from=group, 
+              values_from=c(ATT, CI.lower, CI.upper, se)) %>% 
+  summarise(mean=round((ATT_women-ATT_men), 2),
+            se=sqrt(se_men^2 + se_women^2),
+            lower=round((mean-qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            upper=round((mean+qnorm(p=1-(0.05)/2, mean=0, sd=1)*se), 2),
+            pvalue=round(pnorm(0,mean=abs(mean),sd=se) + 
+              (1 - pnorm(0,mean=-abs(mean),sd=se)),2),
+            time=time) %>% 
+  relocate(time)
+
+s2 <- ddd_women_vs_men_by_period %>% 
+  ggplot(aes(x = time, y = mean, color = '#4daf4a')) +
+  scale_color_manual(values=c('#4daf4a'), labels=c('Women vs Men'))+
+  geom_point(position = position_dodge(width = .5)) + 
+  geom_errorbar( aes( ymax = upper, ymin = lower) , width = .2, position = position_dodge(width = .5), size = 0.7 )+
+  geom_line(position = position_dodge(width = .5), size = 0.7) +
+  ylim(-38, 38)+
+  geom_hline(yintercept = 0, lty=2) +
+  scale_x_continuous(breaks=seq(0,6,1))+
+  theme(legend.position = "top",
+        axis.line = element_line(colour = "grey50", size = 1),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "lemonchiffon", 
+                                         colour = "grey50", 
+                                         size = 1),
+        legend.title = element_blank(),
+        axis.title = element_blank())
+
+
+triple_ddd <- ggarrange(s1,s2, ncol = 2, nrow=1) %>% 
+  annotate_figure(left = textGrob("Change in CVD mortality, per 100,000 population", 
+                                  rot = 90, vjust = 1, gp = gpar(cex = 1.3)), #cex = 0.8
+                  bottom = textGrob("Number of years since Medicaid Expansion", gp = gpar(cex = 1.3)))
+
+triple_ddd
+```
+
+
+
+
+
+
+
+
